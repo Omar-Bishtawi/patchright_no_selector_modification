@@ -4,50 +4,54 @@ import { Project, SyntaxKind } from "ts-morph";
 // server/frames.ts
 // ----------------------------
 export function patchFrames(project) {
-    // Add source file to the project
-    const framesSourceFile = project.addSourceFileAtPath("packages/playwright-core/src/server/frames.ts");
-    // Add the custom import and comment at the start of the file
-    framesSourceFile.insertStatements(0, [
-      "// patchright - custom imports",
-      "import { CRExecutionContext } from './chromium/crExecutionContext';",
-      "import { FrameExecutionContext } from './dom';",
-      "import crypto from 'crypto';",
-      "",
-    ]);
+  // Add source file to the project
+  const framesSourceFile = project.addSourceFileAtPath("packages/playwright-core/src/server/frames.ts");
+  // Add the custom import and comment at the start of the file
+  framesSourceFile.insertStatements(0, [
+    "// patchright - custom imports",
+    "import { CRExecutionContext } from './chromium/crExecutionContext';",
+    "import { FrameExecutionContext } from './dom';",
+    "import crypto from 'crypto';",
+    "",
+  ]);
 
-    // ------- Frame Class -------
-    const frameClass = framesSourceFile.getClass("Frame");
-    // Add Properties to the Frame Class
-    frameClass.addProperty({
-      name: "_isolatedWorld",
-      type: "dom.FrameExecutionContext",
-    });
-    frameClass.addProperty({
-      name: "_mainWorld",
-      type: "dom.FrameExecutionContext",
-    });
-    frameClass.addProperty({
-      name: "_iframeWorld",
-      type: "dom.FrameExecutionContext",
-    });
+  // ------- Frame Class -------
+  const frameClass = framesSourceFile.getClass("Frame");
+  // Add Properties to the Frame Class
+  frameClass.addProperty({
+    name: "_isolatedWorld",
+    type: "dom.FrameExecutionContext",
+  });
+  frameClass.addProperty({
+    name: "_mainWorld",
+    type: "dom.FrameExecutionContext",
+  });
+  frameClass.addProperty({
+    name: "_iframeWorld",
+    type: "dom.FrameExecutionContext",
+  });
+  frameClass.addProperty({
+    name: "_frameExecutionContextId",
+    type: "number | undefined",
+  });
 
-    // -- evalOnSelector Method --
-    const evalOnSelectorMethod = frameClass.getMethod("evalOnSelector");
-    evalOnSelectorMethod.setBodyText(`const handle = await this.selectors.query(selector, { strict }, scope);
+  // -- evalOnSelector Method --
+  const evalOnSelectorMethod = frameClass.getMethod("evalOnSelector");
+  evalOnSelectorMethod.setBodyText(`const handle = await this.selectors.query(selector, { strict }, scope);
         if (!handle)
           throw new Error('Failed to find element matching selector ' + selector);
         const result = await handle.evaluateExpression(expression, { isFunction }, arg, true);
         handle.dispose();
         return result;`)
 
-    // -- evalOnSelectorAll Method --
-    const evalOnSelectorAllMethod = frameClass.getMethod("evalOnSelectorAll");
-    evalOnSelectorAllMethod.addParameter({
-        name: "isolatedContext",
-        type: "boolean",
-        hasQuestionToken: true,
-    });
-    evalOnSelectorAllMethod.setBodyText(`
+  // -- evalOnSelectorAll Method --
+  const evalOnSelectorAllMethod = frameClass.getMethod("evalOnSelectorAll");
+  evalOnSelectorAllMethod.addParameter({
+    name: "isolatedContext",
+    type: "boolean",
+    hasQuestionToken: true,
+  });
+  evalOnSelectorAllMethod.setBodyText(`
       try {
         isolatedContext = this.selectors._parseSelector(selector, { strict: false }).world !== "main" && isolatedContext;
         const arrayHandle = await this.selectors.queryArrayInMainWorld(selector, scope, isolatedContext);
@@ -61,9 +65,9 @@ export function patchFrames(project) {
       }
     `);
 
-    // -- querySelectorAll Method --
-    const querySelectorAllMethod = frameClass.getMethod("querySelectorAll");
-    querySelectorAllMethod.setBodyText(`
+  // -- querySelectorAll Method --
+  const querySelectorAllMethod = frameClass.getMethod("querySelectorAll");
+  querySelectorAllMethod.setBodyText(`
       const metadata = { internal: false, log: [], method: "querySelectorAll" };
       const progress = {
         log: message => metadata.log.push(message),
@@ -76,9 +80,9 @@ export function patchFrames(project) {
       }, 'returnAll', null);
     `);
 
-    // -- querySelector Method --
-    const querySelectorMethod = frameClass.getMethod("querySelector");
-    querySelectorMethod.setBodyText(`
+  // -- querySelector Method --
+  const querySelectorMethod = frameClass.getMethod("querySelector");
+  querySelectorMethod.setBodyText(`
       return this.querySelectorAll(selector, options).then((handles) => {
         if (handles.length === 0)
           return null;
@@ -88,55 +92,57 @@ export function patchFrames(project) {
       });
     `);
 
-    // -- _onClearLifecycle Method --
-    const onClearLifecycleMethod = frameClass.getMethod("_onClearLifecycle");
-    // Modify the constructor's body to include unassignments
-    const onClearLifecycleBody = onClearLifecycleMethod.getBody();
-    onClearLifecycleBody.insertStatements(0, "this._iframeWorld = undefined;");
-    onClearLifecycleBody.insertStatements(0, "this._mainWorld = undefined;");
-    onClearLifecycleBody.insertStatements(0, "this._isolatedWorld = undefined;");
+  // -- _onClearLifecycle Method --
+  const onClearLifecycleMethod = frameClass.getMethod("_onClearLifecycle");
+  // Modify the constructor's body to include unassignments
+  const onClearLifecycleBody = onClearLifecycleMethod.getBody();
+  onClearLifecycleBody.insertStatements(0, "this._iframeWorld = undefined;");
+  onClearLifecycleBody.insertStatements(0, "this._mainWorld = undefined;");
+  onClearLifecycleBody.insertStatements(0, "this._isolatedWorld = undefined;");
+  onClearLifecycleBody.insertStatements(0, "this._frameExecutionContextId = undefined;");
 
-    // -- _getFrameMainFrameContextId Method --
-    // Define the getFrameMainFrameContextIdCode
-    /*const getFrameMainFrameContextIdCode = `var globalDocument = await client._sendMayFail('DOM.getFrameOwner', { frameId: this._id });
-      if (globalDocument && globalDocument.nodeId) {
-        for (const executionContextId of this._page.delegate._sessionForFrame(this)._parsedExecutionContextIds) {
-          var documentObj = await client._sendMayFail("DOM.resolveNode", { nodeId: globalDocument.nodeId });
-          if (documentObj) {
-            var globalThis = await client._sendMayFail('Runtime.evaluate', {
-              expression: "document",
-              serializationOptions: { serialization: "idOnly" },
-              contextId: executionContextId
-            });
-            if (globalThis) {
-              var globalThisObjId = globalThis["result"]['objectId'];
-              var requestedNode = await client.send("DOM.requestNode", { objectId: globalThisObjId });
-              var node = await client._sendMayFail("DOM.describeNode", { nodeId: requestedNode.nodeId, pierce: true, depth: 10 });
-              if (node && node.node.documentURL == this._url) {
-                var node0 = await client._sendMayFail("DOM.resolveNode", { nodeId: requestedNode.nodeId });
-                if (node0 && (node.node.nodeId - 1 == globalDocument.nodeId)) { // && (node.node.backendNodeId + 1 == globalDocument.backendNodeId)
-                  var _executionContextId = parseInt(node0.object.objectId.split('.')[1], 10);
-                  return _executionContextId;
-                }
+  // -- _getFrameMainFrameContextId Method --
+  // Define the getFrameMainFrameContextIdCode
+  /*const getFrameMainFrameContextIdCode = `var globalDocument = await client._sendMayFail('DOM.getFrameOwner', { frameId: this._id });
+    if (globalDocument && globalDocument.nodeId) {
+      for (const executionContextId of this._page.delegate._sessionForFrame(this)._parsedExecutionContextIds) {
+        var documentObj = await client._sendMayFail("DOM.resolveNode", { nodeId: globalDocument.nodeId });
+        if (documentObj) {
+          var globalThis = await client._sendMayFail('Runtime.evaluate', {
+            expression: "document",
+            serializationOptions: { serialization: "idOnly" },
+            contextId: executionContextId
+          });
+          if (globalThis) {
+            var globalThisObjId = globalThis["result"]['objectId'];
+            var requestedNode = await client.send("DOM.requestNode", { objectId: globalThisObjId });
+            var node = await client._sendMayFail("DOM.describeNode", { nodeId: requestedNode.nodeId, pierce: true, depth: 10 });
+            if (node && node.node.documentURL == this._url) {
+              var node0 = await client._sendMayFail("DOM.resolveNode", { nodeId: requestedNode.nodeId });
+              if (node0 && (node.node.nodeId - 1 == globalDocument.nodeId)) { // && (node.node.backendNodeId + 1 == globalDocument.backendNodeId)
+                var _executionContextId = parseInt(node0.object.objectId.split('.')[1], 10);
+                return _executionContextId;
               }
             }
           }
         }
       }
-      return 0;`;*/
+    }
+    return 0;`;*/
 
-    // Add the method to the class
-    frameClass.addMethod({
-      name: "_getFrameMainFrameContextId",
-      isAsync: true,
-      parameters: [
-        { name: "client" },
-      ],
-      returnType: "Promise<number>",
-    });
-    const getFrameMainFrameContextIdMethod = frameClass.getMethod("_getFrameMainFrameContextId",);
-    getFrameMainFrameContextIdMethod.setBodyText(`
+  // Add the method to the class
+  frameClass.addMethod({
+    name: "_getFrameMainFrameContextId",
+    isAsync: true,
+    parameters: [
+      { name: "client" },
+    ],
+    returnType: "Promise<number>",
+  });
+  const getFrameMainFrameContextIdMethod = frameClass.getMethod("_getFrameMainFrameContextId",);
+  getFrameMainFrameContextIdMethod.setBodyText(`
       try {
+        if(this._frameExecutionContextId) return this._frameExecutionContextId;
         var globalDocument = await client._sendMayFail("DOM.getFrameOwner", {frameId: this._id,});
         if (globalDocument && globalDocument.nodeId) {
           var describedNode = await client._sendMayFail("DOM.describeNode", {
@@ -147,6 +153,7 @@ export function patchFrames(project) {
               nodeId: describedNode.node.contentDocument.nodeId,
             });
             var _executionContextId = parseInt(resolvedNode.object.objectId.split(".")[1], 10);
+            this._frameExecutionContextId = _executionContextId;
             return _executionContextId;
           }
         }
@@ -154,10 +161,10 @@ export function patchFrames(project) {
       return 0;
     `);
 
-    // -- _context Method --
-    const contextMethod = frameClass.getMethod("_context");
-    contextMethod.setIsAsync(true);
-    contextMethod.setBodyText(`
+  // -- _context Method --
+  const contextMethod = frameClass.getMethod("_context");
+  contextMethod.setIsAsync(true);
+  contextMethod.setBodyText(`
       /* await this._page.delegate._mainFrameSession._client._sendMayFail('DOM.enable');
       var globalDoc = await this._page.delegate._mainFrameSession._client._sendMayFail('DOM.getFrameOwner', { frameId: this._id });
       if (globalDoc) {
@@ -220,10 +227,10 @@ export function patchFrames(project) {
         return this._mainWorld;
       }`)
 
-    // -- _setContext Method --
-    const setContentMethod = frameClass.getMethod("setContent");
-    // Locate the existing line of code
-    setContentMethod.setBodyText(`
+  // -- _setContext Method --
+  const setContentMethod = frameClass.getMethod("setContent");
+  // Locate the existing line of code
+  setContentMethod.setBodyText(`
       await this.raceNavigationAction(progress, async () => {
         const waitUntil = options.waitUntil === void 0 ? "load" : options.waitUntil;
         progress.log(\`setting frame content, waiting until "\${waitUntil}"\`);
@@ -241,35 +248,35 @@ export function patchFrames(project) {
       });
     `);
 
-    // -- _retryWithProgressIfNotConnected Method --
-    const retryWithProgressIfNotConnectedMethod = frameClass.getMethod("_retryWithProgressIfNotConnected");
-    retryWithProgressIfNotConnectedMethod.addParameter({
-        name: "returnAction",
-        type: "boolean | undefined",
-    });
-    retryWithProgressIfNotConnectedMethod.setBodyText(`
+  // -- _retryWithProgressIfNotConnected Method --
+  const retryWithProgressIfNotConnectedMethod = frameClass.getMethod("_retryWithProgressIfNotConnected");
+  retryWithProgressIfNotConnectedMethod.addParameter({
+    name: "returnAction",
+    type: "boolean | undefined",
+  });
+  retryWithProgressIfNotConnectedMethod.setBodyText(`
       progress.log("waiting for " + this._asLocator(selector));
       return this.retryWithProgressAndTimeouts(progress, [0, 20, 50, 100, 100, 500], async continuePolling => {
         return this._retryWithoutProgress(progress, selector, strict, performActionPreChecks, action, returnAction, continuePolling);
       });
     `);
 
-    // -- _retryWithoutProgress Method --
-    frameClass.addMethod({
-      name: "_retryWithoutProgress",
-      isAsync: true,
-      parameters: [
-        { name: "progress" },
-        { name: "selector" },
-        { name: "strict" },
-        { name: "performActionPreChecks" },
-        { name: "action" },
-        { name: "returnAction" },
-        { name: "continuePolling" },
-      ],
-    });
-    const customRetryWithoutProgressMethod = frameClass.getMethod("_retryWithoutProgress");
-    customRetryWithoutProgressMethod.setBodyText(`
+  // -- _retryWithoutProgress Method --
+  frameClass.addMethod({
+    name: "_retryWithoutProgress",
+    isAsync: true,
+    parameters: [
+      { name: "progress" },
+      { name: "selector" },
+      { name: "strict" },
+      { name: "performActionPreChecks" },
+      { name: "action" },
+      { name: "returnAction" },
+      { name: "continuePolling" },
+    ],
+  });
+  const customRetryWithoutProgressMethod = frameClass.getMethod("_retryWithoutProgress");
+  customRetryWithoutProgressMethod.setBodyText(`
       if (performActionPreChecks) await this._page.performActionPreChecks(progress);
       const resolved = await this.selectors.resolveInjectedForSelector(selector, { strict });
       if (!resolved) {
@@ -348,9 +355,9 @@ export function patchFrames(project) {
       } finally {}
     `);
 
-    // -- waitForSelector Method --
-    const waitForSelectorMethod = frameClass.getMethod("waitForSelector");
-    waitForSelectorMethod.setBodyText(`
+  // -- waitForSelector Method --
+  const waitForSelectorMethod = frameClass.getMethod("waitForSelector");
+  waitForSelectorMethod.setBodyText(`
       if ((options as any).visibility)
         throw new Error('options.visibility is not supported, did you mean options.state?');
       if ((options as any).waitFor && (options as any).waitFor !== 'visible')
@@ -398,9 +405,9 @@ export function patchFrames(project) {
       return scope ? scope._context._raceAgainstContextDestroyed(promise) : promise;
     `)
 
-    // -- isVisibleInternal Method --
-    const isVisibleInternalMethod = frameClass.getMethod("isVisibleInternal");
-    isVisibleInternalMethod.setBodyText(`
+  // -- isVisibleInternal Method --
+  const isVisibleInternalMethod = frameClass.getMethod("isVisibleInternal");
+  isVisibleInternalMethod.setBodyText(`
       try {
         const metadata = { internal: false, log: [], method: "isVisible" };
         const progress = {
@@ -456,17 +463,17 @@ export function patchFrames(project) {
       }
     `);
 
-    // -- evaluateExpressionHandle Method --
-    const evaluateExpressionHandleMethod = frameClass.getMethod("evaluateExpressionHandle");
-    evaluateExpressionHandleMethod.setBodyText(`
+  // -- evaluateExpressionHandle Method --
+  const evaluateExpressionHandleMethod = frameClass.getMethod("evaluateExpressionHandle");
+  evaluateExpressionHandleMethod.setBodyText(`
       const context = await this._context(options.world ?? "utility");
       const value = await context.evaluateExpressionHandle(expression, options, arg);
       return value;
     `);
 
-    // -- queryCount Method --
-    const queryCountMethod = frameClass.getMethod("queryCount");
-    queryCountMethod.setBodyText(`
+  // -- queryCount Method --
+  const queryCountMethod = frameClass.getMethod("queryCount");
+  queryCountMethod.setBodyText(`
       const metadata = { internal: false, log: [], method: "queryCount" };
       const progress = {
         log: message => metadata.log.push(message),
@@ -481,9 +488,9 @@ export function patchFrames(project) {
       }, 'returnAll', null);
     `);
 
-    // -- _expectInternal Method --
-    const expectInternalMethod = frameClass.getMethod("_expectInternal");
-    expectInternalMethod.setBodyText(`
+  // -- _expectInternal Method --
+  const expectInternalMethod = frameClass.getMethod("_expectInternal");
+  expectInternalMethod.setBodyText(`
       // The first expect check, a.k.a. one-shot, always finishes - even when progress is aborted.
       const race = (p) => noAbort ? p : progress.race(p);
       const isArray = options.expression === 'to.have.count' || options.expression.endsWith('.array');
@@ -554,9 +561,9 @@ export function patchFrames(project) {
       return { matches, received };
     `);
 
-    // -- _callOnElementOnceMatches Method --
-    const callOnElementOnceMatchesMethod = frameClass.getMethod("_callOnElementOnceMatches");
-    callOnElementOnceMatchesMethod.setBodyText(`
+  // -- _callOnElementOnceMatches Method --
+  const callOnElementOnceMatchesMethod = frameClass.getMethod("_callOnElementOnceMatches");
+  callOnElementOnceMatchesMethod.setBodyText(`
       const callbackText = body.toString();
       progress.log("waiting for "+ this._asLocator(selector));
       var promise;
@@ -609,21 +616,21 @@ export function patchFrames(project) {
       return scope ? scope._context._raceAgainstContextDestroyed(promise) : promise;
     `)
 
-    // -- _customFindElementsByParsed Method --
-    frameClass.addMethod({
-      name: "_customFindElementsByParsed",
-      isAsync: true,
-      parameters: [
-        { name: "resolved" },
-        { name: "client" },
-        { name: "context" },
-        { name: "documentScope" },
-        { name: "progress" },
-        { name: "parsed" },
-      ],
-    });
-    const customFindElementsByParsedMethod = frameClass.getMethod("_customFindElementsByParsed");
-    customFindElementsByParsedMethod.setBodyText(`
+  // -- _customFindElementsByParsed Method --
+  frameClass.addMethod({
+    name: "_customFindElementsByParsed",
+    isAsync: true,
+    parameters: [
+      { name: "resolved" },
+      { name: "client" },
+      { name: "context" },
+      { name: "documentScope" },
+      { name: "progress" },
+      { name: "parsed" },
+    ],
+  });
+  const customFindElementsByParsedMethod = frameClass.getMethod("_customFindElementsByParsed");
+  customFindElementsByParsedMethod.setBodyText(`
       var parsedEdits = { ...parsed };
       // Note: We start scoping at document level
       var currentScopingElements = [documentScope];
