@@ -30,6 +30,10 @@ export function patchFrames(project) {
       name: "_iframeWorld",
       type: "dom.FrameExecutionContext",
     });
+    frameClass.addProperty({
+      name: "_frameExecutionContextId",
+      type: "number | undefined",
+    });
 
     // -- evalOnSelector Method --
     const evalOnSelectorMethod = frameClass.getMethod("evalOnSelector");
@@ -95,6 +99,7 @@ export function patchFrames(project) {
     onClearLifecycleBody.insertStatements(0, "this._iframeWorld = undefined;");
     onClearLifecycleBody.insertStatements(0, "this._mainWorld = undefined;");
     onClearLifecycleBody.insertStatements(0, "this._isolatedWorld = undefined;");
+    onClearLifecycleBody.insertStatements(0, "this._frameExecutionContextId = undefined;");
 
     // -- _getFrameMainFrameContextId Method --
     // Define the getFrameMainFrameContextIdCode
@@ -137,6 +142,7 @@ export function patchFrames(project) {
     const getFrameMainFrameContextIdMethod = frameClass.getMethod("_getFrameMainFrameContextId",);
     getFrameMainFrameContextIdMethod.setBodyText(`
       try {
+        if(this._frameExecutionContextId) return this._frameExecutionContextId;
         var globalDocument = await client._sendMayFail("DOM.getFrameOwner", {frameId: this._id,});
         if (globalDocument && globalDocument.nodeId) {
           var describedNode = await client._sendMayFail("DOM.describeNode", {
@@ -147,6 +153,7 @@ export function patchFrames(project) {
               nodeId: describedNode.node.contentDocument.nodeId,
             });
             var _executionContextId = parseInt(resolvedNode.object.objectId.split(".")[1], 10);
+            this._frameExecutionContextId = _executionContextId;
             return _executionContextId;
           }
         }
