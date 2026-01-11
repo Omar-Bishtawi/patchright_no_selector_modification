@@ -52,22 +52,24 @@ export function patchFrames(project) {
         hasQuestionToken: true,
     });
     evalOnSelectorAllMethod.setBodyText(`
-      try {
-        isolatedContext = this.selectors._parseSelector(selector, { strict: false }).world !== "main" && isolatedContext;
-        const arrayHandle = await this.selectors.queryArrayInMainWorld(selector, scope, isolatedContext);
-        const result = await arrayHandle.evaluateExpression(expression, { isFunction }, arg, isolatedContext);
-        arrayHandle.dispose();
-        return result;
-      } catch (e) {
-        // Do i look like i know whats going on here?
-        if ("JSHandles can be evaluated only in the context they were created!" === e.message) return await this.evalOnSelectorAll(selector, expression, isFunction, arg, scope, isolatedContext);
-        throw e;
-      }
+        try {
+          isolatedContext = this.selectors._parseSelector(selector, { strict: false }).world !== "main" && isolatedContext;
+          const arrayHandle = await this.selectors.queryArrayInMainWorld(selector, scope, isolatedContext);
+          const result = await arrayHandle.evaluateExpression(expression, { isFunction }, arg, isolatedContext);
+          arrayHandle.dispose();
+          return result;
+        } catch (e) {
+          // Do i look like i know whats going on here?
+          if ("JSHandles can be evaluated only in the context they were created!" === e.message) return await this.evalOnSelectorAll(selector, expression, isFunction, arg, scope, isolatedContext);
+          throw e;
+        }
     `);
 
     // -- querySelectorAll Method --
     const querySelectorAllMethod = frameClass.getMethod("querySelectorAll");
+    const querySelectorAllMethodBodyText = querySelectorAllMethod.getBodyText();
     querySelectorAllMethod.setBodyText(`
+      if(process.env.PATCHRIGHT_CUSTOM_SELECTOR_LOGIC_ENABLED === 'true') {
       const metadata = { internal: false, log: [], method: "querySelectorAll" };
       const progress = {
         log: message => metadata.log.push(message),
@@ -78,11 +80,16 @@ export function patchFrames(project) {
         if (!result || !result[0]) return [];
         return result[1];
       }, 'returnAll', null);
+      } else {
+            ${querySelectorAllMethodBodyText}
+      }
     `);
 
     // -- querySelector Method --
     const querySelectorMethod = frameClass.getMethod("querySelector");
+    const querySelectorBodyText = querySelectorMethod.getBodyText();
     querySelectorMethod.setBodyText(`
+      if(process.env.PATCHRIGHT_CUSTOM_SELECTOR_LOGIC_ENABLED === 'true') {
       return this.querySelectorAll(selector, options).then((handles) => {
         if (handles.length === 0)
           return null;
@@ -90,6 +97,9 @@ export function patchFrames(project) {
           throw new Error(\`Strict mode: expected one element matching selector "\${selector}", found \${handles.length}\`);
         return handles[0];
       });
+      } else {
+        ${querySelectorBodyText}
+      }
     `);
 
     // -- _onClearLifecycle Method --
@@ -254,11 +264,16 @@ export function patchFrames(project) {
         name: "returnAction",
         type: "boolean | undefined",
     });
+    const retryWithProgressIfNotConnectedMethodBodyText = retryWithProgressIfNotConnectedMethod.getBodyText();
     retryWithProgressIfNotConnectedMethod.setBodyText(`
-      progress.log("waiting for " + this._asLocator(selector));
-      return this.retryWithProgressAndTimeouts(progress, [0, 20, 50, 100, 100, 500], async continuePolling => {
-        return this._retryWithoutProgress(progress, selector, strict, performActionPreChecks, action, returnAction, continuePolling);
-      });
+      if(process.env.PATCHRIGHT_CUSTOM_SELECTOR_LOGIC_ENABLED === 'true') {
+        progress.log("waiting for " + this._asLocator(selector));
+        return this.retryWithProgressAndTimeouts(progress, [0, 20, 50, 100, 100, 500], async continuePolling => {
+          return this._retryWithoutProgress(progress, selector, strict, performActionPreChecks, action, returnAction, continuePolling);
+        });
+      } else {
+        ${retryWithProgressIfNotConnectedMethodBodyText}
+      }
     `);
 
     // -- _retryWithoutProgress Method --
@@ -357,109 +372,119 @@ export function patchFrames(project) {
 
     // -- waitForSelector Method --
     const waitForSelectorMethod = frameClass.getMethod("waitForSelector");
+    const waitForSelectorBodyText = waitForSelectorMethod.getBodyText();
     waitForSelectorMethod.setBodyText(`
-      if ((options as any).visibility)
-        throw new Error('options.visibility is not supported, did you mean options.state?');
-      if ((options as any).waitFor && (options as any).waitFor !== 'visible')
-        throw new Error('options.waitFor is not supported, did you mean options.state?');
-      const { state = 'visible' } = options;
-      if (!['attached', 'detached', 'visible', 'hidden'].includes(state))
-        throw new Error(\`state: expected one of (attached|detached|visible|hidden)\`);
-      if (performActionPreChecksAndLog)
-        progress.log(\`waiting for \${this._asLocator(selector)}\${state === 'attached' ? '' : ' to be ' + state}\`);
+      if(process.env.PATCHRIGHT_CUSTOM_SELECTOR_LOGIC_ENABLED === 'true') {
+        if ((options as any).visibility)
+          throw new Error('options.visibility is not supported, did you mean options.state?');
+        if ((options as any).waitFor && (options as any).waitFor !== 'visible')
+          throw new Error('options.waitFor is not supported, did you mean options.state?');
+        const { state = 'visible' } = options;
+        if (!['attached', 'detached', 'visible', 'hidden'].includes(state))
+          throw new Error(\`state: expected one of (attached|detached|visible|hidden)\`);
+        if (performActionPreChecksAndLog)
+          progress.log(\`waiting for \${this._asLocator(selector)}\${state === 'attached' ? '' : ' to be ' + state}\`);
 
-      const promise = this._retryWithProgressIfNotConnected(progress, selector, options.strict, true, async handle => {
-        const attached = !!handle;
-        var visible = false;
-        if (attached) {
-          if (handle.parentNode.constructor.name == "ElementHandle") {
-            visible = await handle.parentNode.evaluateInUtility(([injected, node, { handle }]) => {
-              return handle ? injected.utils.isElementVisible(handle) : false;
-            }, { handle });
-          } else {
-            visible = await handle.parentNode.evaluate((injected, { handle }) => {
-              return handle ? injected.utils.isElementVisible(handle) : false;
-            }, { handle });
+        const promise = this._retryWithProgressIfNotConnected(progress, selector, options.strict, true, async handle => {
+          const attached = !!handle;
+          var visible = false;
+          if (attached) {
+            if (handle.parentNode.constructor.name == "ElementHandle") {
+              visible = await handle.parentNode.evaluateInUtility(([injected, node, { handle }]) => {
+                return handle ? injected.utils.isElementVisible(handle) : false;
+              }, { handle });
+            } else {
+              visible = await handle.parentNode.evaluate((injected, { handle }) => {
+                return handle ? injected.utils.isElementVisible(handle) : false;
+              }, { handle });
+            }
           }
-        }
 
-        const success = {
-          attached,
-          detached: !attached,
-          visible,
-          hidden: !visible
-        }[state];
-        if (!success) return "internal:continuepolling";
-        if (options.omitReturnValue) return null;
+          const success = {
+            attached,
+            detached: !attached,
+            visible,
+            hidden: !visible
+          }[state];
+          if (!success) return "internal:continuepolling";
+          if (options.omitReturnValue) return null;
 
-        const element = state === 'attached' || state === 'visible' ? handle : null;
-        if (!element) return null;
-        if (options.__testHookBeforeAdoptNode) await options.__testHookBeforeAdoptNode();
-        try {
-          return element;
-        } catch (e) {
-          return "internal:continuepolling";
-        }
-      }, "returnOnNotResolved");
+          const element = state === 'attached' || state === 'visible' ? handle : null;
+          if (!element) return null;
+          if (options.__testHookBeforeAdoptNode) await options.__testHookBeforeAdoptNode();
+          try {
+            return element;
+          } catch (e) {
+            return "internal:continuepolling";
+          }
+        }, "returnOnNotResolved");
 
-      return scope ? scope._context._raceAgainstContextDestroyed(promise) : promise;
+        return scope ? scope._context._raceAgainstContextDestroyed(promise) : promise;
+      } else {
+              ${waitForSelectorBodyText}
+      }
     `)
 
     // -- isVisibleInternal Method --
     const isVisibleInternalMethod = frameClass.getMethod("isVisibleInternal");
+    const isVisibleInternalMethodBodyText = isVisibleInternalMethod.getBodyText();
     isVisibleInternalMethod.setBodyText(`
-      try {
-        const metadata = { internal: false, log: [], method: "isVisible" };
-        const progress = {
-          log: message => metadata.log.push(message),
-          metadata,
-          race: (promise) => Promise.race(Array.isArray(promise) ? promise : [promise])
-        }
-        progress.log("waiting for " + this._asLocator(selector));
-        if (selector === ":scope") {
-          const scopeParentNode = scope.parentNode || scope;
-          if (scopeParentNode.constructor.name == "ElementHandle") {
-            return await scopeParentNode.evaluateInUtility(([injected, node, { scope: handle2 }]) => {
-              const state = handle2 ? injected.elementState(handle2, "visible") : {
-                matches: false,
-                received: "error:notconnected"
-              };
-              return state.matches;
-            }, { scope });
-          } else {
-            return await scopeParentNode.evaluate((injected, node, { scope: handle2 }) => {
-              const state = handle2 ? injected.elementState(handle2, "visible") : {
-                matches: false,
-                received: "error:notconnected"
-              };
-              return state.matches;
-            }, { scope });
+      if(process.env.PATCHRIGHT_CUSTOM_SELECTOR_LOGIC_ENABLED === 'true') {
+        try {
+          const metadata = { internal: false, log: [], method: "isVisible" };
+          const progress = {
+            log: message => metadata.log.push(message),
+            metadata,
+            race: (promise) => Promise.race(Array.isArray(promise) ? promise : [promise])
           }
-        } else {
-          return await this._retryWithoutProgress(progress, selector, options.strict, false, async (handle) => {
-            if (!handle) return false;
-            if (handle.parentNode.constructor.name == "ElementHandle") {
-              return await handle.parentNode.evaluateInUtility(([injected, node, { handle: handle2 }]) => {
+          progress.log("waiting for " + this._asLocator(selector));
+          if (selector === ":scope") {
+            const scopeParentNode = scope.parentNode || scope;
+            if (scopeParentNode.constructor.name == "ElementHandle") {
+              return await scopeParentNode.evaluateInUtility(([injected, node, { scope: handle2 }]) => {
                 const state = handle2 ? injected.elementState(handle2, "visible") : {
                   matches: false,
                   received: "error:notconnected"
                 };
                 return state.matches;
-              }, { handle });
+              }, { scope });
             } else {
-              return await handle.parentNode.evaluate((injected, { handle: handle2 }) => {
+              return await scopeParentNode.evaluate((injected, node, { scope: handle2 }) => {
                 const state = handle2 ? injected.elementState(handle2, "visible") : {
                   matches: false,
                   received: "error:notconnected"
                 };
                 return state.matches;
-              }, { handle });
+              }, { scope });
             }
-          }, "returnOnNotResolved", null);
+          } else {
+            return await this._retryWithoutProgress(progress, selector, options.strict, false, async (handle) => {
+              if (!handle) return false;
+              if (handle.parentNode.constructor.name == "ElementHandle") {
+                return await handle.parentNode.evaluateInUtility(([injected, node, { handle: handle2 }]) => {
+                  const state = handle2 ? injected.elementState(handle2, "visible") : {
+                    matches: false,
+                    received: "error:notconnected"
+                  };
+                  return state.matches;
+                }, { handle });
+              } else {
+                return await handle.parentNode.evaluate((injected, { handle: handle2 }) => {
+                  const state = handle2 ? injected.elementState(handle2, "visible") : {
+                    matches: false,
+                    received: "error:notconnected"
+                  };
+                  return state.matches;
+                }, { handle });
+              }
+            }, "returnOnNotResolved", null);
+          }
+        } catch (e) {
+          if (this.isNonRetriableError(e)) throw e;
+          return false;
         }
-      } catch (e) {
-        if (this.isNonRetriableError(e)) throw e;
-        return false;
+      } else {
+        ${isVisibleInternalMethodBodyText}
       }
     `);
 
@@ -473,147 +498,161 @@ export function patchFrames(project) {
 
     // -- queryCount Method --
     const queryCountMethod = frameClass.getMethod("queryCount");
+    const queryCountBodyText = queryCountMethod.getBodyText();
     queryCountMethod.setBodyText(`
-      const metadata = { internal: false, log: [], method: "queryCount" };
-      const progress = {
-        log: message => metadata.log.push(message),
-        metadata,
-        race: (promise) => Promise.race(Array.isArray(promise) ? promise : [promise])
+      if(process.env.PATCHRIGHT_CUSTOM_SELECTOR_LOGIC_ENABLED === 'true') {
+        const metadata = { internal: false, log: [], method: "queryCount" };
+        const progress = {
+          log: message => metadata.log.push(message),
+          metadata,
+          race: (promise) => Promise.race(Array.isArray(promise) ? promise : [promise])
+        }
+        return await this._retryWithoutProgress(progress, selector, null, false, async (result) => {
+          if (!result) return 0;
+          const handle = result[0];
+          const handles = result[1];
+          return handle ? handles.length : 0;
+        }, 'returnAll', null);
+      } else {
+        ${queryCountBodyText}
       }
-      return await this._retryWithoutProgress(progress, selector, null, false, async (result) => {
-        if (!result) return 0;
-        const handle = result[0];
-        const handles = result[1];
-        return handle ? handles.length : 0;
-      }, 'returnAll', null);
     `);
 
     // -- _expectInternal Method --
     const expectInternalMethod = frameClass.getMethod("_expectInternal");
+    const expectInternalMethodBodyText = expectInternalMethod.getBodyText();
     expectInternalMethod.setBodyText(`
-      // The first expect check, a.k.a. one-shot, always finishes - even when progress is aborted.
-      const race = (p) => noAbort ? p : progress.race(p);
-      const isArray = options.expression === 'to.have.count' || options.expression.endsWith('.array');
-      var log, matches, received, missingReceived;
-      if (selector) {
-        const { frame, info } = await race(this.selectors.resolveFrameForSelector(selector, { strict: true }));
-        const action = async result => {
-          if (!result) {
-            if (options.expectedNumber === 0)
-              return { matches: true };
-            // expect(locator).toBeHidden() passes when there is no element.
-            if (!options.isNot && options.expression === 'to.be.hidden')
-              return { matches: true };
-            // expect(locator).not.toBeVisible() passes when there is no element.
-            if (options.isNot && options.expression === 'to.be.visible')
-              return { matches: false };
-            // expect(locator).toBeAttached({ attached: false }) passes when there is no element.
-            if (!options.isNot && options.expression === 'to.be.detached')
-              return { matches: true };
-            // expect(locator).not.toBeAttached() passes when there is no element.
-            if (options.isNot && options.expression === 'to.be.attached')
-              return { matches: false };
-            // expect(locator).not.toBeInViewport() passes when there is no element.
-            if (options.isNot && options.expression === 'to.be.in.viewport')
-              return { matches: false };
-            // When none of the above applies, expect does not match.
-            return { matches: options.isNot, missingReceived: true };
+      if(process.env.PATCHRIGHT_CUSTOM_SELECTOR_LOGIC_ENABLED === 'true') {
+        // The first expect check, a.k.a. one-shot, always finishes - even when progress is aborted.
+        const race = (p) => noAbort ? p : progress.race(p);
+        const isArray = options.expression === 'to.have.count' || options.expression.endsWith('.array');
+        var log, matches, received, missingReceived;
+        if (selector) {
+          const { frame, info } = await race(this.selectors.resolveFrameForSelector(selector, { strict: true }));
+          const action = async result => {
+            if (!result) {
+              if (options.expectedNumber === 0)
+                return { matches: true };
+              // expect(locator).toBeHidden() passes when there is no element.
+              if (!options.isNot && options.expression === 'to.be.hidden')
+                return { matches: true };
+              // expect(locator).not.toBeVisible() passes when there is no element.
+              if (options.isNot && options.expression === 'to.be.visible')
+                return { matches: false };
+              // expect(locator).toBeAttached({ attached: false }) passes when there is no element.
+              if (!options.isNot && options.expression === 'to.be.detached')
+                return { matches: true };
+              // expect(locator).not.toBeAttached() passes when there is no element.
+              if (options.isNot && options.expression === 'to.be.attached')
+                return { matches: false };
+              // expect(locator).not.toBeInViewport() passes when there is no element.
+              if (options.isNot && options.expression === 'to.be.in.viewport')
+                return { matches: false };
+              // When none of the above applies, expect does not match.
+              return { matches: options.isNot, missingReceived: true };
+            }
+
+            const handle = result[0];
+            const handles = result[1];
+
+            if (handle.parentNode.constructor.name == "ElementHandle") {
+              return await handle.parentNode.evaluateInUtility(async ([injected, node, { handle, options, handles }]) => {
+                return await injected.expect(handle, options, handles);
+              }, { handle, options, handles });
+            } else {
+              return await handle.parentNode.evaluate(async (injected, { handle, options, handles }) => {
+                return await injected.expect(handle, options, handles);
+              }, { handle, options, handles });
+            }
           }
 
-          const handle = result[0];
-          const handles = result[1];
-
-          if (handle.parentNode.constructor.name == "ElementHandle") {
-            return await handle.parentNode.evaluateInUtility(async ([injected, node, { handle, options, handles }]) => {
-              return await injected.expect(handle, options, handles);
-            }, { handle, options, handles });
+          if (noAbort) {
+            var { log, matches, received, missingReceived } = await this._retryWithoutProgress(progress, selector, !isArray, false, action, 'returnAll', null);
           } else {
-            return await handle.parentNode.evaluate(async (injected, { handle, options, handles }) => {
-              return await injected.expect(handle, options, handles);
-            }, { handle, options, handles });
+            var { log, matches, received, missingReceived } = await race(this._retryWithProgressIfNotConnected(progress, selector, !isArray, false, action, 'returnAll'));
           }
-        }
-
-        if (noAbort) {
-          var { log, matches, received, missingReceived } = await this._retryWithoutProgress(progress, selector, !isArray, false, action, 'returnAll', null);
         } else {
-          var { log, matches, received, missingReceived } = await race(this._retryWithProgressIfNotConnected(progress, selector, !isArray, false, action, 'returnAll'));
+          const world = options.expression === 'to.have.property' ? 'main' : 'utility';
+          const context = await race(this._context(world));
+          const injected = await race(context.injectedScript());
+          var { matches, received, missingReceived } = await race(injected.evaluate(async (injected, { options, callId }) => {
+            return { ...await injected.expect(undefined, options, []) };
+          }, { options, callId: progress.metadata.id }));
         }
+
+        if (log)
+          progress.log(log);
+        // Note: missingReceived avoids \`unexpected value "undefined"\` when element was not found.
+        if (matches === options.isNot) {
+          lastIntermediateResult.received = missingReceived ? '<element(s) not found>' : received;
+          lastIntermediateResult.isSet = true;
+          if (!missingReceived && !Array.isArray(received))
+            progress.log(\`  unexpected value "\${renderUnexpectedValue(options.expression, received)}"\`);
+        }
+        return { matches, received };
       } else {
-        const world = options.expression === 'to.have.property' ? 'main' : 'utility';
-        const context = await race(this._context(world));
-        const injected = await race(context.injectedScript());
-        var { matches, received, missingReceived } = await race(injected.evaluate(async (injected, { options, callId }) => {
-          return { ...await injected.expect(undefined, options, []) };
-        }, { options, callId: progress.metadata.id }));
+        ${expectInternalMethodBodyText}
       }
-
-
-      if (log)
-        progress.log(log);
-      // Note: missingReceived avoids \`unexpected value "undefined"\` when element was not found.
-      if (matches === options.isNot) {
-        lastIntermediateResult.received = missingReceived ? '<element(s) not found>' : received;
-        lastIntermediateResult.isSet = true;
-        if (!missingReceived && !Array.isArray(received))
-          progress.log(\`  unexpected value "\${renderUnexpectedValue(options.expression, received)}"\`);
-      }
-      return { matches, received };
     `);
 
     // -- _callOnElementOnceMatches Method --
     const callOnElementOnceMatchesMethod = frameClass.getMethod("_callOnElementOnceMatches");
+    const callOnElementOnceMatchesMethodBodyText = callOnElementOnceMatchesMethod.getBodyText();
     callOnElementOnceMatchesMethod.setBodyText(`
-      const callbackText = body.toString();
-      progress.log("waiting for "+ this._asLocator(selector));
-      var promise;
-      if (selector === ":scope") {
-        const scopeParentNode = scope.parentNode || scope;
-        if (scopeParentNode.constructor.name == "ElementHandle") {
-          promise = scopeParentNode.evaluateInUtility(([injected, node, { callbackText: callbackText2, scope: handle2, taskData: taskData2 }]) => {
-            const callback = injected.eval(callbackText2);
-            const haha = callback(injected, handle2, taskData2);
-            return haha;
-          }, {
-            callbackText,
-            scope,
-            taskData
-          });
-        } else {
-          promise = scopeParentNode.evaluate((injected, { callbackText: callbackText2, scope: handle2, taskData: taskData2 }) => {
-            const callback = injected.eval(callbackText2);
-            return callback(injected, handle2, taskData2);
-          }, {
-            callbackText,
-            scope,
-            taskData
-          });
-        }
-      } else {
-        promise = this._retryWithProgressIfNotConnected(progress, selector, options.strict, false, async (handle) => {
-          if (handle.parentNode.constructor.name == "ElementHandle") {
-            return await handle.parentNode.evaluateInUtility(([injected, node, { callbackText: callbackText2, handle: handle2, taskData: taskData2 }]) => {
+      if(process.env.PATCHRIGHT_CUSTOM_SELECTOR_LOGIC_ENABLED === 'true') {
+        const callbackText = body.toString();
+        progress.log("waiting for "+ this._asLocator(selector));
+        var promise;
+        if (selector === ":scope") {
+          const scopeParentNode = scope.parentNode || scope;
+          if (scopeParentNode.constructor.name == "ElementHandle") {
+            promise = scopeParentNode.evaluateInUtility(([injected, node, { callbackText: callbackText2, scope: handle2, taskData: taskData2 }]) => {
               const callback = injected.eval(callbackText2);
               const haha = callback(injected, handle2, taskData2);
               return haha;
             }, {
               callbackText,
-              handle,
+              scope,
               taskData
             });
           } else {
-            return await handle.parentNode.evaluate((injected, { callbackText: callbackText2, handle: handle2, taskData: taskData2 }) => {
+            promise = scopeParentNode.evaluate((injected, { callbackText: callbackText2, scope: handle2, taskData: taskData2 }) => {
               const callback = injected.eval(callbackText2);
               return callback(injected, handle2, taskData2);
             }, {
               callbackText,
-              handle,
+              scope,
               taskData
             });
           }
-        })
+        } else {
+          promise = this._retryWithProgressIfNotConnected(progress, selector, options.strict, false, async (handle) => {
+            if (handle.parentNode.constructor.name == "ElementHandle") {
+              return await handle.parentNode.evaluateInUtility(([injected, node, { callbackText: callbackText2, handle: handle2, taskData: taskData2 }]) => {
+                const callback = injected.eval(callbackText2);
+                const haha = callback(injected, handle2, taskData2);
+                return haha;
+              }, {
+                callbackText,
+                handle,
+                taskData
+              });
+            } else {
+              return await handle.parentNode.evaluate((injected, { callbackText: callbackText2, handle: handle2, taskData: taskData2 }) => {
+                const callback = injected.eval(callbackText2);
+                return callback(injected, handle2, taskData2);
+              }, {
+                callbackText,
+                handle,
+                taskData
+              });
+            }
+          })
+        }
+        return scope ? scope._context._raceAgainstContextDestroyed(promise) : promise;
+      } else {
+        ${callOnElementOnceMatchesMethodBodyText}
       }
-      return scope ? scope._context._raceAgainstContextDestroyed(promise) : promise;
     `)
 
     // -- _customFindElementsByParsed Method --

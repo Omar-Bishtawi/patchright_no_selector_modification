@@ -49,24 +49,29 @@ export function patchFrameSelectors(project) {
     const resolveFrameForSelectorIfStatement = resolveFrameForSelectorMethod.getDescendantsOfKind(SyntaxKind.IfStatement).find(statement => statement.getExpression().getText() === "!element" && statement.getThenStatement().getText() === "return null;");
     resolveFrameForSelectorIfStatement.replaceWithText(`
       if (!element) {
-        try {
-          var client = frame._page.delegate._sessionForFrame(frame)._client;
-        } catch (e) {
-          var client = frame._page.delegate._mainFrameSession._client;
-        }
-        var mainContext = await frame._context("main");
-        const documentNode = await client.send("Runtime.evaluate", {
-          expression: "document",
-          serializationOptions: {
-            serialization: "idOnly"
-          },
-          contextId: mainContext.delegate._contextId
-        });
-        const documentScope = new ElementHandle(mainContext, documentNode.result.objectId);
-        var check = await this._customFindFramesByParsed(injectedScript, client, mainContext, documentScope, info.parsed);
-        if (check.length > 0) {
-          element = check[0];
+        if(process.env.PATCHRIGHT_CUSTOM_SELECTOR_LOGIC_ENABLED === 'true') {
+          try {
+            var client = frame._page.delegate._sessionForFrame(frame)._client;
+          } catch (e) {
+            var client = frame._page.delegate._mainFrameSession._client;
+          }
+          var mainContext = await frame._context("main");
+          const documentNode = await client.send("Runtime.evaluate", {
+            expression: "document",
+            serializationOptions: {
+              serialization: "idOnly"
+            },
+            contextId: mainContext.delegate._contextId
+          });
+          const documentScope = new ElementHandle(mainContext, documentNode.result.objectId);
+          var check = await this._customFindFramesByParsed(injectedScript, client, mainContext, documentScope, info.parsed);
+          if (check.length > 0) {
+            element = check[0];
+          } else {
+            return null;
+          }
         } else {
+          // Vanilla Playwright: fail fast if element not found
           return null;
         }
       }
