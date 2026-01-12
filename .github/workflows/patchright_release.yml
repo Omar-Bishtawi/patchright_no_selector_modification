@@ -7,6 +7,10 @@ on:
       version:
         description: 'Playwright Version'
         default: ''
+      branch:
+        description: 'Branch to release from'
+        default: 'main'
+        required: false
 
 
 env:
@@ -22,6 +26,8 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.inputs.branch || 'main' }}
 
       - name: Configure Fast APT Mirror
         uses: vegardit/fast-apt-mirror.sh@v1
