@@ -7,9 +7,6 @@ on:
       version:
         description: 'Playwright Version'
         default: ''
-  # running every hour
-  schedule:
-    - cron: '0 * * * *'
 
 
 env:
